@@ -1,6 +1,7 @@
 import psycopg2
 import getpass
 import time
+import pandas as pd
 from collections import defaultdict
 
 
@@ -67,7 +68,12 @@ def data_to_dict_data(data, columns):
             dictdata[columns[c]].append(row[c])
     return dictdata
 
-                     
+
+def query_to_table(db, qry):
+    data, col = db.query(qry, True) # run query
+    dd = data_to_dict_data(data, col) # convert to dictionary
+    df = pd.DataFrame(dd, columns=col) # convert to pandas dataframe
+    return df
 
     
     
