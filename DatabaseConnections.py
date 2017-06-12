@@ -75,5 +75,9 @@ def query_to_table(db, qry):
     df = pd.DataFrame(dd, columns=col) # convert to pandas dataframe
     return df
 
-    
-    
+
+def import_table(db, table_name, csv, seperator=','):
+    cur = db.conn.cursor() 
+    with open(csv) as f:
+        cur.copy_from(f, table_name, sep=seperator, null='')
+    print '{} imported to {}'.format(csv, table_name)
