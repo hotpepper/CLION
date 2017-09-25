@@ -1,19 +1,17 @@
-
-
 print 'STARTING...\n'
 __author__ = 'SHostetter'
 
 # set up base globals
-FOLDER = '' # working directory
-DB_HOST = '' # database host
-DB_NAME = '' # database name
-LION = '' # LION segment table
-NODE = '' # LION node table
-RPL = '' # LION RPL database table
-RPL_TXT = '' # raw LION RPL text file 
-VERSION = '' # LION verion number
-PRECINCTS = '' # police precincts table w geom
-BOROUGHS = '' # borough boundary table w geom
+FOLDER = r'C:\Users\SHostetter\Desktop\GIT\CLION' # working directory
+DB_HOST = 'Dotdevpgsql01.dot.nycnet' # database host
+DB_NAME = 'RIS_TRAINING'# CRASHDATA' #'RIS_TRAINING' # database name
+LION = 'lion' # LION segment table
+NODE = 'node' # LION node table
+RPL = 'tbl_rpl' # LION RPL database table
+RPL_TXT = 'RPL.txt' # raw LION RPL text file 
+VERSION = '16d' # LION verion number
+PRECINCTS = 'districts_police_precincts' # police precincts table w geom
+BOROUGHS = 'districts_boroughs' # borough boundary table w geom
 HIGHWAYS = True
 SRID = 2263
 
