@@ -12,5 +12,5 @@
 *.sbx
 *.xml
 *.zip
-*\ARCHIVE
-*\Data
+ARCHIVE/**
+Data/**
