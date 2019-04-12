@@ -210,7 +210,9 @@ def build_generic_node_levels(dbo, schema, node_table, lion_table, rpl_table):
                     -- join lion on rb nodes (to) to get level
                     join {s}.{l} l on l.nodeidto::int = t.r_tond
                     where l.featuretyp in ('0', '6', 'C') 
-                    
+                    ------------------------------------fails for ints with ramps and devided rds without other x-street
+                    and l.rb_layer !='G'
+                    --------------------------------------------------------------------------------------------------
                     union 
                     
                     select distinct n.nodeid, l.nodelevelf--, n.geom
@@ -220,6 +222,9 @@ def build_generic_node_levels(dbo, schema, node_table, lion_table, rpl_table):
                     -- join lion on rb nodes (to) to get level
                     join {s}.{l} l on l.nodeidfrom::int = t.r_frnd
                     where l.featuretyp in ('0', '6', 'C') 
+                    ------------------------------------fails for ints with ramps and devided rds without other x-street
+                    and l.rb_layer !='G'
+                    --------------------------------------------------------------------------------------------------
                 ) as nl group by nodeid--, geom;
             """.format(s=schema, n=node_table, l=lion_table, r=rpl_table))
     dbo.query("""
@@ -251,6 +256,15 @@ def build_generic_node_levels(dbo, schema, node_table, lion_table, rpl_table):
                     
                    """.format(s=schema))
 
+    # override node level=1 for cases listed as virtual intersection
+    # this is needed because streets where rb_layer='B' aren't in rpl pointer file so the level count may be wrong
+    dbo.query("""
+                update {s}.node_levels l
+                set levels=2
+                from {s}.{n} as n
+                where l.nodeid=n.nodeid and n.vintersect='VirtualIntersection'
+    """.format(s=schema, n=node_table))
+
 
 @db2.timeDec
 def build_street_name_table(dbo, schema=params.WORKING_SCHEMA, lion=params.LION, node=params.NODE):
@@ -276,7 +290,7 @@ def build_street_name_table(dbo, schema=params.WORKING_SCHEMA, lion=params.LION,
                 );""".format(schema, lion))
     # update node intersection flag where there are more than 1 unique street names
     print 'Updating intersection flag...'
-    # update stanradr intersections
+    # update standard intersections
     dbo.query("""
             update {s}.{n} set is_int = True
             from (select node, count(distinct street) 
@@ -513,7 +527,9 @@ def generate_blocks_from_masterids(dbo,
     print 'Updating lion with mfts\n'
     dbo.query("""update {0}.{1} as l
                        set mft = t.mft::int
-                       from {0}.tempmaster as t
+                       -- added min(mft) sice blockes are defined in both directions
+                       -- and mft attribution was random
+                       from (select seg, min(mft) as mft from {0}.tempmaster group by seg) as t
                        where l.segmentid =t.seg""".format(schema, lion))
     dbo.query("drop table {}.tempmaster".format(schema))
     return alt_graph
@@ -920,6 +936,9 @@ def remap_blocks(dbo, lion_table, node_table, schema):
         select mft, n.masterid 
         from {s}.{l} l join {s}.{n} n on l.nodeidto::int=n.nodeid 
         where masterid is not null;""".format(l=lion_table, n=node_table, s=schema))
+    dbo.query("""delete from {s}.temp_masters where mft in (
+                select mft from {s}.temp_masters group by mft having count(*) <3
+            )""".format(s=schema))  # -------- only fix forks where there is an issue (was removing needed masters)
     dbo.query("""        
         drop table if exists {s}.temp_masters_segs;
         create table {s}.temp_masters_segs as 
@@ -1026,6 +1045,62 @@ def update_roadbed_nodes(dbo, schema, node_table, tbl_rpl):
                 -- cleanup 
                 drop table {s}.rb_masterids;
             """.format(s=schema, r=tbl_rpl, n=node_table))
+
+    # second run - TODO: this needs to bbe re-thought a little
+    # jumps levels out and may over select in some cases where the rpl is a little funky
+    dbo.query("""
+                    drop table if exists {s}.rb_masterids;
+                    create table {s}.rb_masterids as 
+                    select n.nodeid, nn.masterid
+                    from {s}.{n} as n
+                    -- join node to rpl on rb nodes (to)
+                    join {s}.{r} as t on n.nodeid=t.r_tond
+                    -- join node to rpl on centerline nodes (to) 
+                    join {s}.{n} as nn on g_tond = nn.nodeid
+                    where n.masterid is null and nn.masterid is not null
+                    union 
+                    select n.nodeid, nn.masterid
+                    from {s}.{n} as n
+                    -- join {s}.{n} to rpl on rb nodes (from)
+                    join {s}.{r} as t on n.nodeid=t.r_frnd
+                    -- join node to rpl on centerline nodes (from) 
+                    join {s}.{n} as nn on g_frnd = nn.nodeid
+                    where n.masterid is null and nn.masterid is not null
+                    -- this might be over kill, but just in case join in opposite direction 
+                    union
+                    select n.nodeid, nn.masterid
+                    from {s}.{n} as n
+                    -- join node to rpl on rb nodes (to)
+                    join {s}.{r} as t on n.nodeid=t.g_tond
+                    -- join node to rpl on centerline nodes (to) 
+                    join {s}.{n} as nn on r_tond = nn.nodeid
+                    where n.masterid is null and nn.masterid is not null
+                    union 
+                    select n.nodeid, nn.masterid
+                    from {s}.{n} as n
+                    -- join node to rpl on rb nodes (from)
+                    join {s}.{r} as t on n.nodeid=t.g_frnd
+                    -- join node to rpl on centerline nodes (from) 
+                    join {s}.{n} as nn on r_frnd = nn.nodeid
+                    where n.masterid is null and nn.masterid is not null;
+                    """.format(s=schema, r=tbl_rpl, n=node_table))
+    # update node table rb nodes with masters from centerline
+    dbo.query("""
+                    -- update node table
+                    update {s}.{n} as n
+                    set masterid = r.masterid
+                    from {s}.rb_masterids as r
+                    where n.nodeid=r.nodeid
+                    and n.masterid is null;
+                 """.format(s=schema, r=tbl_rpl, n=node_table))
+    # housekeeping
+    dbo.query("""
+                    -- fix intersection flag
+                    update {s}.{n} set is_cntrln_int = is_int;
+                    update {s}.{n} set is_int = true where masterid is not null; 
+                    -- cleanup 
+                    drop table {s}.rb_masterids;
+                """.format(s=schema, r=tbl_rpl, n=node_table))
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 #     10.  Make master geom lookup tables
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
