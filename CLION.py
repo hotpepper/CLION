@@ -1153,6 +1153,7 @@ def make_master_node_lookup(dbo, schema, node_table, version):
                     on n.nodeid = t.node
                 ) as display on n.masterid = display.masterid;
                 drop table if exists {s}.temp_best_node;
+                grant all on {s}.master_node_geo_lookup to public;
            """.format(s=schema, n=node_table))
     dbo.query("""
                 Comment on table {s}.master_node_geo_lookup is 
@@ -1198,6 +1199,7 @@ def make_master_segment_lookup(dbo, schema, lion_table, version):
                 ) t on l.mft = t.mft;
                 drop table if exists {s}.temp_display_seg;
                 drop table if exists {s}.temp_master_seg_geo_lookup;
+                grant all on {s}.master_seg_geo_lookup to public;
             """.format(s=schema, l=lion_table))
     dbo.query("""
                 Comment on table {s}.master_seg_geo_lookup is 
