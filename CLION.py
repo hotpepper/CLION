@@ -990,6 +990,12 @@ def update_roadbeds(dbo, schema, lion_table, tbl_rpl):
 
 @db2.timeDec
 def update_roadbed_nodes(dbo, schema, node_table, tbl_rpl):
+    # set centerline intersection flag
+    dbo.query("""
+                alter table {s}.{n} add is_cntrln_int bool default False; 
+                update {s}.{n} set is_cntrln_int = is_int;
+            """.format(s=schema, r=tbl_rpl, n=node_table))
+
     # node -> rpl(rb) -> node(gen) connects rb node to gen node
     dbo.query("""
                 drop table if exists {s}.rb_masterids;
@@ -1038,15 +1044,12 @@ def update_roadbed_nodes(dbo, schema, node_table, tbl_rpl):
              """.format(s=schema, r=tbl_rpl, n=node_table))
     # housekeeping
     dbo.query("""
-                -- fix intersection flag
-                alter table {s}.{n} add is_cntrln_int bool; 
-                update {s}.{n} set is_cntrln_int = is_int;
                 update {s}.{n} set is_int = true where masterid is not null; 
                 -- cleanup 
                 drop table {s}.rb_masterids;
             """.format(s=schema, r=tbl_rpl, n=node_table))
 
-    # second run - TODO: this needs to bbe re-thought a little
+    # second run - TODO: this needs to be re-thought a little
     # jumps levels out and may over select in some cases where the rpl is a little funky
     dbo.query("""
                     drop table if exists {s}.rb_masterids;
@@ -1096,7 +1099,6 @@ def update_roadbed_nodes(dbo, schema, node_table, tbl_rpl):
     # housekeeping
     dbo.query("""
                     -- fix intersection flag
-                    update {s}.{n} set is_cntrln_int = is_int;
                     update {s}.{n} set is_int = true where masterid is not null; 
                     -- cleanup 
                     drop table {s}.rb_masterids;
