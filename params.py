@@ -2,12 +2,13 @@ from collections import defaultdict
 
 __author__ = 'SHostetter'
 # set up base globals
-DB_HOST =  # database host
-DB_NAME =  # Database
-WORKING_SCHEMA = 'public'  # 'working'
+DB_HOST = 'DOTDEVPGSQL02' #'DOTDEVRHPGSQL01'  # database host
+DB_NAME = 'CRASHDATA' #'RIS_TRAINING'  # # Database
+WORKING_SCHEMA = 'working'  # 'working'
 FINAL_SCHEMA = 'public'
-LION = 'lion'  
-NODE = 'node'  '
+ARCHIVE_SCHEMA = 'archive'
+LION = 'lion'
+NODE = 'node'
 RPL = 'tbl_rpl'
 RPL_TXT = 'RPL.txt'
 VERSION = '18d'  # '15b'
@@ -16,7 +17,7 @@ BOROUGHS = 'districts_boroughs'
 HIGHWAYS = True
 SRID = 2263
 
-FOLDER = r'C:\Users\SHostetter\Desktop\GIT\CLION2\DATA\18D'
+FOLDER = r'C:\Users\SHostetter\Desktop\GIT\CLION\DATA\18D'
 
 # global dictionaries
 def st_name_factory():
