@@ -2,8 +2,8 @@ from collections import defaultdict
 
 __author__ = 'SHostetter'
 # set up base globals
-DB_HOST = 'DOTDEVPGSQL02' #'DOTDEVRHPGSQL01'  # database host
-DB_NAME = 'CRASHDATA' #'RIS_TRAINING'  # # Database
+DB_HOST =  # database host
+DB_NAME = # Database
 WORKING_SCHEMA = 'working'  # 'working'
 FINAL_SCHEMA = 'public'
 ARCHIVE_SCHEMA = 'archive'
@@ -17,7 +17,7 @@ BOROUGHS = 'districts_boroughs'
 HIGHWAYS = True
 SRID = 2263
 
-FOLDER = r'C:\Users\SHostetter\Desktop\GIT\CLION\DATA\18D'
+FOLDER = # working folder
 
 # global dictionaries
 def st_name_factory():
