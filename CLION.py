@@ -52,9 +52,12 @@ from datetime import datetime
 #     9. Update roadbeds
 #       a. update roadbed segments
 #       b. update roadbed nodes
-#     10. Make master geom lookup tables
-#     11. Make views
-#     12. Cleanup and index
+#     10. Generate corridors
+#       a. Dissolve on street name and geom
+#       b. Create ID for corridors
+#     11 Make master geom lookup tables
+#     12. Make views
+#     13. Cleanup and index
 
 
 # -----------------------------------------------------------------
@@ -62,20 +65,21 @@ from datetime import datetime
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 # Step 1: Setup database
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-def archive(dbo, lion=params.LION, node=params.NODE, schema=params.WORKING_SCHEMA):
+def archive(dbo, lion=params.LION, node=params.NODE, schema=params.WORKING_SCHEMA ,
+            archive_schema=params.ARCHIVE_SCHEMA):
     print 'Archiving existing version...\n'
     # get last version
     v = dbo.query("select distinct version||'.'||created::date from {s}.{l}".format(
         l=lion,
         s=schema))
-    dbo.query("""drop table if exists {s}."{ver}_{l}";
-                create table {s}."{ver}_{l}" as 
+    dbo.query("""drop table if exists {archs}."{ver}_{l}";
+                create table {archs}."{ver}_{l}" as 
                 select * from {s}.{l}
-                """.format(s=schema, l=lion, ver=v.data[0][0]))
-    dbo.query("""drop table if exists {s}."{ver}_{n}";
-                    create table {s}."{ver}_{n}" as 
+                """.format(archs=archive_schema, s=schema, l=lion, ver=v.data[0][0]))
+    dbo.query("""drop table if exists {archs}."{ver}_{n}";
+                    create table {archs}."{ver}_{n}" as 
                     select * from {s}.{n}
-                    """.format(s=schema, n=node, ver=v.data[0][0]))
+                    """.format(archs=archive_schema, s=schema, n=node, ver=v.data[0][0]))
 
 
 @db2.timeDec
@@ -97,12 +101,18 @@ def setup_database(dbo, lion=params.LION, node=params.NODE, version=params.VERSI
             )
         print 'Imported {}'.format(os.path.join(params.FOLDER, shp[0]))
     # fix node geom field (GDAL imports as MultiPoint
+    # Revised process for PostGIS 2.X +
     dbo.query("""
-            alter table {s}.{t} add column geo geometry(Point,2263);
-            update {s}.{t} set geo = (st_dump(geom)).geom;
-            alter table {s}.{t} drop column geom;
-            alter table {s}.{t} rename geo to geom;
+                ALTER TABLE {s}.{t} 
+                ALTER COLUMN geom TYPE geometry(Point,2263) USING ST_GeometryN(geom, 1);
             """.format(s=schema, t=node))
+    # Replaced with Above - this method needed for PostGIS 1.X
+    # dbo.query("""
+    #         alter table {s}.{t} add column geo geometry(Point,2263);
+    #         update {s}.{t} set geo = (st_dump(geom)).geom;
+    #         alter table {s}.{t} drop column geom;
+    #         alter table {s}.{t} rename geo to geom;
+    #         """.format(s=schema, t=node))
     # add RPL table
     RPLi.run(dbo, folder, rpl)
     # add version
@@ -844,7 +854,7 @@ def stabilize_masters(dbo, node_table, schema):
     dbo.query("""
                 update {s}.{n} as n
                 set newid = nm.newid
-                from new_masters as nm
+                from {s}.new_masters as nm
                 where n.masterid = nm.masterid;""".format(s=schema, n=node_table))
     dbo.query("update {s}.{n} set masterid = newid;".format(s=schema, n=node_table))
     dbo.query("alter table {s}.{n} drop column newid;".format(s=schema, n=node_table))
@@ -917,7 +927,7 @@ def stabilize_mfts(dbo, lion_table, schema):
     dbo.query("""
                 update {s}.{n} as n
                 set newid = nm.newid::int
-                from new_mft as nm
+                from {s}.new_mft as nm
                 where n.masteridfrom = nm.masteridfrom and 
                 n.masteridto = nm.masteridto;""".format(s=schema, n=lion_table))
     dbo.query("update {s}.{n} set mft = newid;".format(s=schema, n=lion_table))
@@ -1103,8 +1113,122 @@ def update_roadbed_nodes(dbo, schema, node_table, tbl_rpl):
                     -- cleanup 
                     drop table {s}.rb_masterids;
                 """.format(s=schema, r=tbl_rpl, n=node_table))
+
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-#     10.  Make master geom lookup tables
+#     10.  Generate corridors
+# |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+# add street names
+@db2.timeDec
+def corridor_names(dbo):
+    dbo.query("""-- p street is the street name without directional prefix
+                alter table {s}.{l} drop column if exists corridor_street;
+                alter table {s}.{l} add corridor_street text;
+                update {s}.{l} set corridor_street = case 
+                    -- edge case streets where the direction is the name
+                    when street in ('SOUTH STREET', 'WEST STREET','NORTH STREET', 'EAST STREET',
+                        'SOUTH AVENUE', 'WEST AVENUE','NORTH AVENUE', 'EAST AVENUE',
+                        'SOUTH BOULEVARD', 'WEST BOULEVARD','NORTH BOULEVARD', 'EAST BOULEVARD',
+                        'SOUTH LOOP', 'WEST LOOP','NORTH LOOP', 'EAST LOOP',
+                        'SOUTH ROAD', 'WEST ROAD','NORTH ROAD', 'EAST ROAD',
+                        'SOUTH DRIVE', 'WEST DRIVE','NORTH DRIVE', 'EAST DRIVE',
+                        'WEST END AVENUE', 'EAST END AVENUE', 'SOUTH END AVENUE', 'NORTH END AVENUE',
+                        'WEST END DRIVE', 'EAST END DRIVE', 'SOUTH END DRIVE', 'NORTH END DRIVE',
+                        'EAST BROADWAY', 'WEST BROADWAY'
+                    ) then street
+                        -- remove direction from names
+                        when street like 'EAST %%' then replace(street, 'EAST ', '')
+                        when street like 'WEST %%' then replace(street, 'WEST ', '')
+                        when street like 'SOUTH %%' then replace(street, 'SOUTH ', '')
+                        when street like 'NORTH %%' then replace(street, 'NORTH ', '')
+                        else street
+                    end   
+    """.format(s=params.WORKING_SCHEMA, l=params.LION))
+
+
+# Dissolve on continuity and street name
+@db2.timeDec
+def dissolve_corridors(dbo):
+    dbo.query("""
+                alter table {s}.{l} drop column if exists cid; 
+                alter table {s}.{l} add cid text; 
+
+                drop table if exists {s}._corridor_;
+                create table {s}._corridor_ as (
+                select corridor_street, boro,  ST_CollectionExtract(unnest(ST_ClusterIntersecting(geom)),2) as geom
+                from (
+                        select corridor_street, greatest(lboro, rboro) as boro
+                        ,ST_LineMerge(ST_LineMerge(((ST_Dump(st_linemerge(st_union(geom)))).geom))) as geom
+                        from {s}.{l} where exclude = False -- 18D uses boolean 
+                        group by corridor_street, greatest(lboro, rboro)
+                    ) as p
+                group by corridor_street, boro
+                );
+            """.format(s=params.WORKING_SCHEMA, l=params.LION))
+
+
+# generate temp ID based on dissolve length
+@db2.timeDec
+def corridor_id(dbo):
+    dbo.query("""
+                drop table if exists {s}._corridor3_;
+                create table {s}._corridor3_ as
+                select corridor_street, boro, geom, 
+                count(*) OVER (PARTITION BY boro, corridor_street ORDER BY st_length(geom) desc) AS cid
+                from {s}._corridor_ 
+                order by corridor_street, cid;
+            """.format(s=params.WORKING_SCHEMA))
+    # rename temp table
+    dbo.query("""
+                drop table if exists {s}._corridor_;
+                alter table {s}._corridor3_ rename to _corridor_;
+                update {s}._corridor_ set geom = st_setsrid(geom, 2263);
+            """.format(s=params.WORKING_SCHEMA))
+    # create ID number
+    dbo.query("""                
+                -- cid is boro - P street name - the order # by length of corridor desc 
+                drop table if exists {s}._corridor2_;
+                create table {s}._corridor2_ as (
+                    select corridor_street, boro, cid,
+                        (st_dump(geom)).path[1] as path,
+                        (st_dump(geom)).geom as geom
+                    from (
+                        select boro, corridor_street, boro::varchar(1)||'-'||corridor_street||'-'||id::varchar(10) as cid, 
+                        st_union(st_buffer(geom, 10)) as geom
+                        from (
+                            SELECT {s}._corridor_.boro, {s}._corridor_.corridor_street, len,
+                            count(*) OVER (PARTITION BY {s}._corridor_.boro, {s}._corridor_.corridor_street ORDER BY len desc) AS id, 
+                            {s}._corridor_.geom
+                            FROM  {s}._corridor_ join (
+                                select corridor_street, boro, cid, sum(st_length(geom)) as len
+                                from {s}._corridor_
+                                group by corridor_street, boro, cid
+                            ) t on {s}._corridor_.boro=t.boro and {s}._corridor_.corridor_street=t.corridor_street and {s}._corridor_.cid=t.cid
+                            ORDER BY boro, corridor_street, len desc
+                        ) as d group by boro, corridor_street, boro::varchar(1)||'-'||corridor_street||'-'||id::varchar(10)
+                        ) as buf
+                    );
+
+                """.format(s=params.WORKING_SCHEMA, l=params.LION))
+
+
+# Add ID to LION
+@db2.timeDec
+def add_corridor_to_lion(dbo):
+    dbo.query("""
+                update {s}.{l} as l
+                    set cid =b.cid
+                    from {s}._corridor2_ as b
+                    where st_within(l.geom, b.geom)
+                    and l.corridor_street=b.corridor_street
+                    and greatest(lboro, rboro)=b.boro
+                    and exclude = False; -- 18D uses boolean;
+
+                drop table {s}._corridor_;
+                drop table {s}._corridor2_;
+    """.format(s=params.WORKING_SCHEMA, l=params.LION))
+
+# |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
+#     11.  Make master geom lookup tables
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 
 
@@ -1151,7 +1275,7 @@ def make_master_node_lookup(dbo, schema, node_table, version):
                 join 
                 (
                     select n.nodeid, t.masterid, n.geom
-                    from {s}.{n} as n join temp_best_node as t 
+                    from {s}.{n} as n join {s}.temp_best_node as t 
                     on n.nodeid = t.node
                 ) as display on n.masterid = display.masterid;
                 drop table if exists {s}.temp_best_node;
@@ -1208,7 +1332,7 @@ def make_master_segment_lookup(dbo, schema, lion_table, version):
                 'CLION display coordinates for segments with mfts (Version {v} - Run: {d}'
             """.format(s=schema, v=version, d=datetime.now().strftime('%Y-%m-%d')))
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-#     11. Make views
+#     12. Make views
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 
 
@@ -1250,11 +1374,11 @@ def ramp_intersection_views(dbo, schema, node_table, lion_table):
                 """.format(s=schema, l=lion_table, n=node_table))
 
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
-#     12.  Cleanup and index
+#     13.  Cleanup and index
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 
 
-def add_indexes(dbo,  node_table, lion_table):
+def add_indexes(dbo,  node_table, lion_table, schema=params.WORKING_SCHEMA):
     index_list = ["drop index if exists nd_IDX;",
                   "drop index if exists master_IDX;",
                   "drop index if exists seg_IDX;",
@@ -1263,18 +1387,22 @@ def add_indexes(dbo,  node_table, lion_table):
                   "drop index if exists nt_IDX;",
                   "drop index if exists mf_IDX;",
                   "drop index if exists mt_IDX;",
-                  "CREATE INDEX nd_IDX ON {n} (nodeid);".format(n=node_table),
-                  "CREATE INDEX master_IDX ON {n} (masterid);".format(n=node_table),
-                  "CREATE INDEX seg_IDX ON {l} (segmentid);".format(l=lion_table),
-                  "CREATE INDEX mft_IDX ON {l} (mft);".format(l=lion_table),
-                  "CREATE INDEX nf_IDX ON {l} (nodeidfrom);".format(l=lion_table),
-                  "CREATE INDEX nt_IDX ON {l} (nodeidto);".format(l=lion_table),
-                  "CREATE INDEX mf_IDX ON {l} (masteridfrom);".format(l=lion_table),
-                  "CREATE INDEX mt_IDX ON {l} (masteridto);".format(l=lion_table)
+                  "CREATE INDEX nd_IDX ON {s}.{n} (nodeid);".format(s=schema, n=node_table),
+                  "CREATE INDEX master_IDX ON {s}.{n} (masterid);".format(s=schema, n=node_table),
+                  "CREATE INDEX seg_IDX ON {s}.{l} (segmentid);".format(s=schema, l=lion_table),
+                  "CREATE INDEX mft_IDX ON {s}.{l} (mft);".format(s=schema, l=lion_table),
+                  "CREATE INDEX nf_IDX ON {s}.{l} (nodeidfrom);".format(s=schema, l=lion_table),
+                  "CREATE INDEX nt_IDX ON {s}.{l} (nodeidto);".format(s=schema, l=lion_table),
+                  "CREATE INDEX mf_IDX ON {s}.{l} (masteridfrom);".format(s=schema, l=lion_table),
+                  "CREATE INDEX mt_IDX ON {s}.{l} (masteridto);".format(s=schema, l=lion_table)
                   ]
     print 'Indexing...\n'
     for idx in tqdm(index_list):
-        dbo.query(idx)
+        try:
+            dbo.query(idx)
+        except:
+            print 'failed on {}'.format(idx)
+
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 #     *** DONE ***
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
@@ -1288,7 +1416,8 @@ def run():
         archive(db,
                 params.LION,
                 params.NODE,
-                params.WORKING_SCHEMA)
+                params.WORKING_SCHEMA,
+                params.ARCHIVE_SCHEMA)
     fixes = [
         # KNOWN ERRORS IN LION TO FIX | INPUTS:
         # (field to select on, value to select on, field to update, value to update)
@@ -1435,6 +1564,11 @@ def run():
         params.WORKING_SCHEMA,
         params.NODE,
         params.RPL)
+    #     10. Generate corridors
+    corridor_names(db)
+    dissolve_corridors(db)
+    corridor_id(db)
+    add_corridor_to_lion(db)
     db.dbClose()
     del db
 
@@ -1443,7 +1577,7 @@ def index_and_permissions():
     print '\nIndex and permissions...\n'
     # split here, because db was hanging somewhere in the make lookup when run in full, run in pieces was fine
     db = db2.PostgresDb(params.DB_HOST, params.DB_NAME, quiet=True)
-    #     10.  Make master geom lookup tables
+    #     11.  Make master geom lookup tables
     make_master_node_lookup(
         db,
         params.WORKING_SCHEMA,
@@ -1454,7 +1588,7 @@ def index_and_permissions():
         params.WORKING_SCHEMA,
         params.LION,
         params.VERSION)
-    #     11.  Make views
+    #     12.  Make views
     street_name_view(
         db,
         params.WORKING_SCHEMA,
@@ -1465,10 +1599,11 @@ def index_and_permissions():
         params.NODE,
         params.LION)
 
-#     12. Cleanup and index
+#     13. Cleanup and index
     add_indexes(db,
                 params.NODE,
-                params.LION)
+                params.LION,
+                params.WORKING_SCHEMA)
 
     db.query("grant all on lion to public; grant all on node to public")
     print '\n\n'
