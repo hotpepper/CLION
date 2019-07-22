@@ -1,5 +1,6 @@
 import os
 from tqdm import tqdm
+import params
 
 
 def read_file(file_path):
@@ -45,15 +46,15 @@ def add_to_db(db, data, rpl):
     rpl_table = 'tbl_'+rpl[:-4].lower()
     cur = db.conn.cursor()  # use cursor rather than full method to avoid noisy print statements
     # make sure table exists and is clean
-    cur.execute("""DROP TABLE if exists %s;
-                    CREATE TABLE %s
+    cur.execute("""DROP TABLE if exists {s}.{t};
+                    CREATE TABLE {s}.{t}
                     (
                       rpl_id bigint, segmentidg bigint, segmentidr bigint,
                       rpc character varying(1), nci character varying(1),
                       nodelevelf character varying(1), nodelevelt character varying(1),
                       r_frnd bigint, g_frnd bigint, r_tond bigint, g_tond bigint
                     );
-                """ % (rpl_table, rpl_table))
+                """.format(s=params.WORKING_SCHEMA, t=rpl_table))
     db.conn.commit()
     del cur
     print 'Adding RPL data'
@@ -65,10 +66,10 @@ def add_to_db(db, data, rpl):
 def add_row(db, row):
     cur = db.conn.cursor()
     if row[0]:
-        cur.execute("""INSERT INTO tbl_rpl (rpl_id, segmentidg, segmentidr, rpc, nci,nodelevelf,
+        cur.execute("""INSERT INTO {s}.tbl_rpl (rpl_id, segmentidg, segmentidr, rpc, nci,nodelevelf,
                         nodelevelt, r_frnd, g_frnd, r_tond, g_tond)
-                        VALUES (%s);
-                    """ % str(row)[1:-1])
+                        VALUES ({v});
+                    """.format(s=params.WORKING_SCHEMA, v=str(row)[1:-1]))
         db.conn.commit()
         del cur
         #print 'Added %s' % row[0]
