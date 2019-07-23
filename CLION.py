@@ -116,6 +116,7 @@ def setup_database(dbo, lion=params.LION, node=params.NODE, version=params.VERSI
                 ALTER COLUMN geom TYPE geometry(Point,2263) USING ST_GeometryN(geom, 1);
             """.format(s=schema, t=node))
     # Replaced with Above - this method needed for PostGIS 1.X
+    # fix node geom field (GDAL imports as MultiPoint)
     # dbo.query("""
     #         alter table {s}.{t} add column geo geometry(Point,2263);
     #         update {s}.{t} set geo = (st_dump(geom)).geom;
@@ -322,7 +323,7 @@ def build_street_name_table(dbo, schema=params.WORKING_SCHEMA, lion=params.LION,
     # update where ramp intersects with a a street
     dbo.query("""
     -- standard
-    update node set is_int = True
+    update {s}.node set is_int = True
     from (
         select street.* 
         from (select distinct node, street from {s}.node_stnameFT where ramp = False) street
