@@ -1379,14 +1379,14 @@ def ramp_intersection_views(dbo, schema, node_table, lion_table):
 
 
 def add_indexes(dbo,  node_table, lion_table, schema=params.WORKING_SCHEMA):
-    index_list = ["drop index if exists nd_IDX;",
-                  "drop index if exists master_IDX;",
-                  "drop index if exists seg_IDX;",
-                  "drop index if exists mft_IDX;",
-                  "drop index if exists nf_IDX;",
-                  "drop index if exists nt_IDX;",
-                  "drop index if exists mf_IDX;",
-                  "drop index if exists mt_IDX;",
+    index_list = ["drop index if exists {s}.nd_IDX;".format(s=schema),
+                  "drop index if exists {s}.master_IDX;".format(s=schema),
+                  "drop index if exists {s}.seg_IDX;".format(s=schema),
+                  "drop index if exists {s}.mft_IDX;".format(s=schema),
+                  "drop index if exists {s}.nf_IDX;".format(s=schema),
+                  "drop index if exists {s}.nt_IDX;".format(s=schema),
+                  "drop index if exists {s}.mf_IDX;".format(s=schema),
+                  "drop index if exists {s}.mt_IDX;".format(s=schema),
                   "CREATE INDEX nd_IDX ON {s}.{n} (nodeid);".format(s=schema, n=node_table),
                   "CREATE INDEX master_IDX ON {s}.{n} (masterid);".format(s=schema, n=node_table),
                   "CREATE INDEX seg_IDX ON {s}.{l} (segmentid);".format(s=schema, l=lion_table),
@@ -1398,10 +1398,8 @@ def add_indexes(dbo,  node_table, lion_table, schema=params.WORKING_SCHEMA):
                   ]
     print 'Indexing...\n'
     for idx in tqdm(index_list):
-        try:
-            dbo.query(idx)
-        except:
-            print 'failed on {}'.format(idx)
+        dbo.query(idx)
+
 
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 #     *** DONE ***
