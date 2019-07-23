@@ -7,6 +7,7 @@ import math
 import itertools
 from collections import defaultdict
 from datetime import datetime
+import getpass
 
 #
 # This is the refactor of CLION intended to simplify the workflow.
@@ -76,10 +77,18 @@ def archive(dbo, lion=params.LION, node=params.NODE, schema=params.WORKING_SCHEM
                 create table {archs}."{ver}_{l}" as 
                 select * from {s}.{l}
                 """.format(archs=archive_schema, s=schema, l=lion, ver=v.data[0][0]))
+    dbo.query("""
+            comment on table {archs}."{ver}_{l}" is 'Created by {u} on {d}'
+            """.format(archs=archive_schema, s=schema, l=lion, ver=v.data[0][0],
+                       u=getpass.getuser(), d=datetime.now().strftime('%Y-%m-%d %H:%M')))
     dbo.query("""drop table if exists {archs}."{ver}_{n}";
                     create table {archs}."{ver}_{n}" as 
                     select * from {s}.{n}
                     """.format(archs=archive_schema, s=schema, n=node, ver=v.data[0][0]))
+    dbo.query("""
+                comment on table {archs}."{ver}_{n}" is 'Created by {u} on {d}'
+                """.format(archs=archive_schema, s=schema, n=node, ver=v.data[0][0],
+                           u=getpass.getuser(), d=datetime.now().strftime('%Y-%m-%d %H:%M')))
 
 
 @db2.timeDec
@@ -1602,8 +1611,25 @@ def index_and_permissions():
                 params.NODE,
                 params.LION,
                 params.WORKING_SCHEMA)
+    tables = [
+        params.LION,
+        params.NODE,
+        'master_seg_geo_lookup',
+        'master_node_geo_lookup',
+        'node_stnameft'
+    ]
+    for table in tables:
+        db.query("grant all on {s}.{t} to public;".format(
+            s=params.WORKING_SCHEMA,
+            t=table
+        ))
+        db.query("""
+                       comment on table {s}.{t} is 'Created by {u} on {d}'
+                       """.format(s=params.WORKING_SCHEMA,
+                                  t=table,
+                                  u=getpass.getuser(),
+                                  d=datetime.now().strftime('%Y-%m-%d %H:%M')))
 
-    db.query("grant all on lion to public; grant all on node to public")
     print '\n\n'
     print '#' * 50
     print '\n{s}DONE\n'.format(s=' '*23)
