@@ -9,6 +9,8 @@ from collections import defaultdict
 from datetime import datetime
 import getpass
 
+# ***TODO***
+# mft for the intersection of 2 rb streets is problematic ec. 63 st and queens blvd
 #
 # This is the refactor of CLION intended to simplify the workflow.
 #
@@ -126,15 +128,15 @@ def setup_database(dbo, lion=params.LION, node=params.NODE, version=params.VERSI
     # add RPL table
     RPLi.run(dbo, folder, rpl)
     # add version
-    add_version(dbo, schema, lion, node, version, rpl)
+    add_version(dbo, schema, version, [lion, node, 'tbl_'+rpl[:-4]])
     # add master id columns
     add_clion_columns(dbo, schema, lion, node)
 
 
-def add_version(dbo, schema=params.WORKING_SCHEMA, lion=params.LION, node=params.NODE,
-                version=params.VERSION, rpl=params.RPL_TXT):
+def add_version(dbo, schema=params.WORKING_SCHEMA, version=params.VERSION,
+                tables=[params.LION, params.NODE, 'tbl_'+params.RPL_TXT[:-4]]):
     # update lion, node and rpl with version number
-    tables = [lion, node, 'tbl_'+rpl[:-4]]
+    # tables = [lion, node, 'tbl_'+rpl[:-4]]
     for table in tables:
         print 'Updating {}...'.format(table)
         dbo.query("ALTER TABLE {s}.{t} ADD version varchar(5)".format(s=schema, t=table))
@@ -217,12 +219,11 @@ def build_generic_node_levels(dbo, schema, node_table, lion_table, rpl_table):
     # this is only used for ramps (some road have split levels where we want to keep as intersection),
     # but ramps passing over a street at a different level should be excluded
 
+    # make levels_lookup_table
     dbo.query("""
-                drop table if exists {s}.rb_to_generic_node_levels;
-                create table {s}.rb_to_generic_node_levels as
-                
-                select nodeid, count(*) as levels--, geom
-                from (
+                    drop table if exists {s}.rb_to_generic_node_levels_lookup;
+                    create table {s}.rb_to_generic_node_levels_lookup as
+
                     select distinct n.nodeid, l.nodelevelt--, n.geom
                     from {s}.{n} as n
                     -- join node to rpl on g nodes (to)
@@ -234,7 +235,7 @@ def build_generic_node_levels(dbo, schema, node_table, lion_table, rpl_table):
                     and l.rb_layer !='G'
                     --------------------------------------------------------------------------------------------------
                     union 
-                    
+
                     select distinct n.nodeid, l.nodelevelf--, n.geom
                     from {s}.{n} as n
                     -- join node to rpl on g nodes (to)
@@ -245,25 +246,53 @@ def build_generic_node_levels(dbo, schema, node_table, lion_table, rpl_table):
                     ------------------------------------fails for ints with ramps and devided rds without other x-street
                     and l.rb_layer !='G'
                     --------------------------------------------------------------------------------------------------
-                ) as nl group by nodeid--, geom;
+
+                    union ---------------------------------ADD IN SEGMENTS IN BOTH -----------------------------------
+
+                    select nodeidfrom::int as nodeid, nodelevelf
+                    from {s}.{l} 
+                    where rb_layer = 'B'
+                    and featuretyp in ('0', '6', 'C') 
+                    union 
+                    select nodeidto::int as nodeid, nodelevelt
+                    from {s}.{l} 
+                    where rb_layer = 'B'
+                    and featuretyp in ('0', '6', 'C') 
+                """.format(s=schema, n=node_table, l=lion_table, r=rpl_table))
+
+    # generate node levels for undivided streets
+    dbo.query("""
+                   drop table if exists {s}.generic_node_levels_lookup;
+
+                   create table {s}.generic_node_levels_lookup as
+                       select nodeidfrom::int as nodeid, nodelevelf
+                       from {s}.{l} l
+                       left outer join {s}.rb_to_generic_node_levels as nl on nl.nodeid = l.nodeidfrom::int
+                       where l.featuretyp in ('0', '6', 'C') and nl.nodeid is null
+                       union
+                       select nodeidto::int as nodeid, nodelevelt
+                       from {s}.{l} l
+                       left outer join {s}.rb_to_generic_node_levels as nl on nl.nodeid = l.nodeidto::int
+                       where l.featuretyp in ('0', '6', 'C') and nl.nodeid is null
+                  """.format(s=schema, l=lion_table, r=rpl_table))
+
+    dbo.query("""
+                drop table if exists {s}.rb_to_generic_node_levels;
+                create table {s}.rb_to_generic_node_levels as
+                
+                select nodeid, count(*) as levels--, geom
+                from {s}.rb_to_generic_node_levels_lookup group by nodeid
+                
             """.format(s=schema, n=node_table, l=lion_table, r=rpl_table))
+    # generate node levels for undivided streets
     dbo.query("""
                 drop table if exists {s}.generic_node_levels;
 
                 create table {s}.generic_node_levels as
                 
                 select nodeid, count(*) as levels--, geom
-                from (
-                    select nodeidfrom::int as nodeid, nodelevelf
-                    from {s}.{l} l
-                    left outer join {s}.rb_to_generic_node_levels as nl on nl.nodeid = l.nodeidfrom::int
-                    where l.featuretyp in ('0', '6', 'C') and nl.nodeid is null
-                    union
-                    select nodeidto::int as nodeid, nodelevelt
-                    from {s}.{l} l
-                    left outer join {s}.rb_to_generic_node_levels as nl on nl.nodeid = l.nodeidto::int
-                    where l.featuretyp in ('0', '6', 'C') and nl.nodeid is null
-                ) as gnl group by nodeid;
+                from {s}.generic_node_levels_lookup group by nodeid;
+               
                """.format(s=schema, l=lion_table, r=rpl_table))
     dbo.query("""
                     drop table if exists {s}.node_levels;
@@ -295,7 +324,7 @@ def build_street_name_table(dbo, schema=params.WORKING_SCHEMA, lion=params.LION,
                 create table {0}.node_stnameFT as (
                     select left(node, length(node)-1)::int as node, -- remove nodelevel from nodeid
                     /*case when ramp = True then 'Ramp' else street end as*/--removed because it was over clusering
-                     street, ramp, 0 as master
+                     street, ramp, 0 as master, right(node, 1) as level
                     from (
                         select nodeidfrom||nodelevelf as node, street, ramp
                         from {0}.{1} where exclude = False or ramp = True
@@ -323,19 +352,47 @@ def build_street_name_table(dbo, schema=params.WORKING_SCHEMA, lion=params.LION,
     # update where ramp intersects with a a street
     dbo.query("""
     -- standard
-    update {s}.node set is_int = True
+    update {s}.{n} n set is_int = True
     from (
         select street.* 
-        from (select distinct node, street from {s}.node_stnameFT where ramp = False) street
-        join (select distinct node, 'ramp' from {s}.node_stnameFT where ramp = True) ramp
-        on street.node = ramp.node
+        from (select distinct node, street, level from {s}.node_stnameFT where ramp = False) street
+        join (select distinct node, street, level from {s}.node_stnameFT where ramp = True) ramp
+        on street.node = ramp.node and street.street != ramp.street and street.level = ramp.level
         /*left outer*/ join {s}.node_levels as levels 
         on street.node = levels.nodeid
         where levels.levels = 1 --or levels.levels is null
     ) as i
-    where node.nodeid = i.node;
-    """.format(s=schema))
+    where n.nodeid = i.node;
+    """.format(s=schema, n=node))
     define_double_segments(dbo, schema, lion, node)
+
+    # additional ramp intersection process to overcome locations with ramps at multi-roadbed locations
+    # this was failing for for ints with ramps and divided rds without other x-street
+    dbo.query(
+        """
+        update {s}.{n} n set is_int = True
+        from (
+            select distinct n.*
+            from {s}.{n} n
+            -- ramps with faux segments 
+            join (select * from {s}.{l} where segmenttyp = 'F' and ramp = True) f 
+            on n.nodeid = f.nodeidfrom::int 
+            -- intersects regular streets generic streets 
+            join (select * from {s}.{l} where rb_layer = 'G' and exclude = False) s 
+            on n.nodeid = s.nodeidfrom::int 
+            union 
+            select distinct n.*
+            from {s}.{n} n
+            join (select * from {s}.{l} where segmenttyp = 'F' and ramp = True) f 
+            on n.nodeid = f.nodeidto::int 
+            join (select * from {s}.{l} where rb_layer = 'G' and exclude = False) s 
+            on n.nodeid = s.nodeidto::int 
+            where n.is_int = False
+        ) as ri
+        where n.nodeid = ri.nodeid 
+        """.format(s=schema, n=node, l=lion)
+    )
+
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 # Step 5: Build simplified network
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
@@ -388,6 +445,7 @@ def define_double_segments(dbo, schema=params.WORKING_SCHEMA, lion=params.LION, 
 
 @db2.timeDec
 def node_names(dbo, node_street_names, node_is_intersection, schema=params.WORKING_SCHEMA, node=params.NODE):
+    # TODO: Need to create an exclusion list - ex. concourse village east/west
     def de_suffix(name):
         # remove some precision in street names to create better sets
         d = {' WEST': ' DIR',
@@ -1292,6 +1350,13 @@ def make_master_node_lookup(dbo, schema, node_table, version):
                 grant all on {s}.master_node_geo_lookup to public;
            """.format(s=schema, n=node_table))
     dbo.query("""
+        alter table {s}.master_node_geo_lookup add column st_x decimal, add column st_y decimal, add column wkt text;
+        update {s}.master_node_geo_lookup 
+            set wkt=st_astext(geom),
+            st_x = st_x(ST_Centroid(geom)),
+            st_y = st_y(ST_Centroid(geom));
+    """.format(s=schema))
+    dbo.query("""
                 Comment on table {s}.master_node_geo_lookup is 
                 'CLION display coordinates for nodes with masterids (Version {v} - Run: {d}'
             """.format(s=schema, v=version, d=datetime.now().strftime('%Y-%m-%d')))
@@ -1337,6 +1402,15 @@ def make_master_segment_lookup(dbo, schema, lion_table, version):
                 drop table if exists {s}.temp_master_seg_geo_lookup;
                 grant all on {s}.master_seg_geo_lookup to public;
             """.format(s=schema, l=lion_table))
+    dbo.query("""
+        alter table {s}.master_seg_geo_lookup add column st_x decimal, add column st_y decimal, add column wkt text;
+        
+        update {s}.master_seg_geo_lookup 
+            set wkt=st_astext(geom),
+            st_x = st_x(ST_Centroid(geom)),
+            st_y = st_y(ST_Centroid(geom));
+    """.format(s=schema))
+
     dbo.query("""
                 Comment on table {s}.master_seg_geo_lookup is 
                 'CLION display coordinates for segments with mfts (Version {v} - Run: {d}'
@@ -1466,8 +1540,21 @@ def run():
         ('segmentid', "'0175063'", 'nodelevelt', "'M'"),  # was *
         ('segmentid', "'0175063'", 'nodelevelf', "'M'"),  # was *
         ('segmentid', "'0175063'", 'rb_layer', "'B'"),  # was G
-        ('segmentid', "'0175063'", 'rw_type', "'9'")  # need to treat it as a ramp
-    ]
+        ('segmentid', "'0175063'", 'rw_type', "'9'"),  # need to treat it as a ramp
+
+        ('segmentid', "'0164272'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0164273'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0164278'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0164279'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0164362'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0164361'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0106838'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0172607'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0106850'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0172627'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0067829'", 'trafdir', "'A'"),  # was P
+        ('segmentid', "'0172639'", 'trafdir', "'A'")  # was P
+        ]
 
     print '\n'*25
     setup_database(db)  # 221 sec
@@ -1619,6 +1706,7 @@ def index_and_permissions():
         'master_node_geo_lookup',
         'node_stnameft'
     ]
+    add_version(db, params.WORKING_SCHEMA, params.VERSION, tables[2:])
     for table in tables:
         db.query("grant all on {s}.{t} to public;".format(
             s=params.WORKING_SCHEMA,
