@@ -1,4 +1,5 @@
 import RIS_Tools as db2
+import setup_clion_folder as suf
 from tqdm import tqdm
 import params
 import os
@@ -93,6 +94,39 @@ def archive(dbo, lion=params.LION, node=params.NODE, schema=params.WORKING_SCHEM
                            u=getpass.getuser(), d=datetime.now().strftime('%Y-%m-%d %H:%M')))
 
 
+def import_districts(dbo, schema=params.WORKING_SCHEMA, folder=params.FOLDER):
+    """
+    Use DCP files NOT clipped to shoreline - USE water included to avoid problems with bridges 
+     
+    Sources: 
+        https://www1.nyc.gov/site/planning/data-maps/open-data/districts-download-metadata.page
+        https://www1.nyc.gov/site/planning/data-maps/open-data/dwn-nynta.page
+    :param dbo: 
+    :param schema: 
+    :param folder: 
+    :return: 
+    """
+    # districts:
+    #     community districts - included in lion (l_cd, r_cd)
+    #     police precincts - nypp (this is only available clipped to shoreline)
+    #     borough - included in lion (lboro, rboro)
+    #     city council districts - nycc
+    #     state assembly districts - included in lion (LAssmDist, RAssmDist)
+    #     state senate districts - nyss
+    #     NTA - nynta
+    # ------------------------------------------------------------------------
+    # import districts
+    for shp in ('nyccwi', 'nysswi', 'nynta', 'nypp'):
+        shapefile = os.path.join(folder, '%s.shp' % shp)
+        dbo.query('DROP TABLE IF EXISTS {}.{}'.format(schema, shp.replace('wi', '')))
+        db2.import_shp_to_pg(shapefile, dbo, schema, perc=True)
+        if shapefile != shp:
+            dbo.query('ALTER TABLE {}."{}" RENAME TO {}'.format(schema, shapefile.lower()[:-4], shp.replace('wi', '')))
+            dbo.query('ALTER TABLE {}."{}" RENAME wkb_geometry  TO {}'.format(schema, shp.replace('wi', ''), 'geom'))
+        print 'Imported {}'.format(os.path.join(folder, shp))
+
+
+
 @db2.timeDec
 def setup_database(dbo, lion=params.LION, node=params.NODE, version=params.VERSION, rpl=params.RPL_TXT,
                    schema=params.WORKING_SCHEMA, folder=params.FOLDER):
@@ -101,16 +135,20 @@ def setup_database(dbo, lion=params.LION, node=params.NODE, version=params.VERSI
     for table in tables:
         dbo.query("DROP TABLE IF EXISTS {s}.{t} CASCADE;".format(s=schema, t=table))
     # import lion shapefiles
-    for shp in [('lion.shp', params.LION), ('node.shp', params.NODE)]:
-        shapefile = os.path.join(params.FOLDER, shp[0])
+    folder = folder + '/DATA'
+    for shp in [('lion.shp', lion), ('node.shp', node)]:
+    # for feat in [lion, node]:
+        shapefile = os.path.join(folder, shp[0])
         db2.import_shp_to_pg(shapefile, dbo, schema)
+        # db2.import_from_gdb(os.path.join(folder, 'RAW_DATA\lion\lion.gdb'),
+        #                     feat, dbo, schema)
         # rename if needed
         if shapefile != shp[1]:
             dbo.query('ALTER TABLE {}."{}" RENAME TO {}'.format(schema, shapefile.lower()[:-4], shp[1]))
             dbo.query('ALTER TABLE {}."{}" RENAME wkb_geometry  TO {}'.format(
                 schema, shp[1], 'geom')
             )
-        print 'Imported {}'.format(os.path.join(params.FOLDER, shp[0]))
+        print 'Imported {}'.format(os.path.join(folder, shp[0]))
     # fix node geom field (GDAL imports as MultiPoint
     # Revised process for PostGIS 2.X +
     dbo.query("""
@@ -127,10 +165,15 @@ def setup_database(dbo, lion=params.LION, node=params.NODE, version=params.VERSI
     #         """.format(s=schema, t=node))
     # add RPL table
     RPLi.run(dbo, folder, rpl)
+    # add districts
+    import_districts(dbo, schema=schema, folder=folder)
+
     # add version
-    add_version(dbo, schema, version, [lion, node, 'tbl_'+rpl[:-4]])
+    add_version(dbo, schema, version, [lion, node, 'tbl_'+rpl[:-4], 'nycc', 'nyss', 'nynta', 'nypp'])
     # add master id columns
     add_clion_columns(dbo, schema, lion, node)
+    # add districts
+    add_districts(dbo, schema, lion)
 
 
 def add_version(dbo, schema=params.WORKING_SCHEMA, version=params.VERSION,
@@ -152,7 +195,16 @@ def add_clion_columns(dbo, schema=params.WORKING_SCHEMA, lion=params.LION, node=
                  add column masteridto int, 
                  add column exclude bool default True, 
                  add column manual_fix bool default False,
-                 add column ramp bool default False
+                 add column ramp bool default False,
+                 
+                 add column lcoundist int,
+                 add column rcoundist int,
+                 add column lstsendist int,
+                 add column rstsendist int,
+                 add column lborocode int,
+                 add column rborocode int,
+                 add column lprecinct int,
+                 add column rprecinct int
                  """.format(
         schema, lion))
     dbo.query("""alter table {0}.{1} 
@@ -160,6 +212,90 @@ def add_clion_columns(dbo, schema=params.WORKING_SCHEMA, lion=params.LION, node=
                  add column is_int bool default False,
                  add column manual_fix bool default False
                 """.format(schema, node))
+
+
+@db2.timeDec
+def add_districts(dbo, schema=params.WORKING_SCHEMA, lion=params.LION):
+    print 'Adding Districts...'
+    # update city council districts
+    dbo.query("""
+       drop table if exists buf;
+        create table {s}.buf as select coundist, st_buffer(geom, 10) as geom from {s}.nycc;
+        CREATE INDEX temp_buf_idx ON {s}.buf USING gist (geom); 
+        
+        update {s}.{l} as l
+        set lcoundist = coundist, rcoundist = coundist
+        from {s}.buf p
+        where st_within(l.geom, p.geom);
+        
+        update {s}.{l} as l
+        set rcoundist = coundist
+        from {s}.buf p
+        where lcoundist != coundist and st_within(l.geom, p.geom);
+        
+        drop table if exists {s}.buf;
+    """.format(s=schema, l=lion))
+    print 'City Council districts added'
+    # update nta districts
+    dbo.query("""
+           drop table if exists buf;
+            create table {s}.buf as select borocode, st_buffer(geom, 10) as geom from {s}.nynta;
+            CREATE INDEX temp_buf_idx ON {s}.buf USING gist (geom); 
+
+            update {s}.{l} as l
+            set lborocode = borocode, rborocode = borocode
+            from {s}.buf p
+            where st_within(l.geom, p.geom);
+
+            update {s}.{l} as l
+            set rborocode = borocode
+            from {s}.buf p
+            where lborocode != borocode and st_within(l.geom, p.geom);
+
+            drop table if exists {s}.buf;
+        """.format(s=schema, l=lion))
+    print 'NTAs added'
+    # update police precincts
+    # added st_makevalid because there was an issue with 61st PCT
+    dbo.query("""
+              drop table if exists buf;
+               create table {s}.buf as select precinct, st_buffer(st_makevalid(geom), 10) as geom from {s}.nypp;
+               CREATE INDEX temp_buf_idx ON {s}.buf USING gist (geom); 
+
+               update {s}.{l} as l
+               set lprecinct = precinct, rprecinct = precinct
+               from {s}.buf p
+               where st_within(l.geom, p.geom);
+
+               update {s}.{l} as l
+               set rprecinct = precinct
+               from {s}.buf p
+               where lprecinct != precinct and st_within(l.geom, p.geom);
+
+               drop table if exists {s}.buf;
+           """.format(s=schema, l=lion))
+    print 'Police Precincts added'
+
+    # update state senate districts
+    dbo.query("""
+                  drop table if exists buf;
+                   create table {s}.buf as select stsendist, st_buffer(geom, 10) as geom from {s}.nyss;
+                   CREATE INDEX temp_buf_idx ON {s}.buf USING gist (geom); 
+
+                   update {s}.{l} as l
+                   set lstsendist = stsendist, rstsendist = stsendist
+                   from {s}.buf p
+                   where st_within(l.geom, p.geom);
+
+                   update {s}.{l} as l
+                   set rstsendist = stsendist
+                   from {s}.buf p
+                   where lstsendist != stsendist and st_within(l.geom, p.geom);
+
+                   drop table if exists {s}.buf;
+               """.format(s=schema, l=lion))
+    print 'State Senate districts added'
+
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
 # Step 2: Define street network to use (centerline)
 # |||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
@@ -1493,7 +1629,7 @@ def add_indexes(dbo,  node_table, lion_table, schema=params.WORKING_SCHEMA):
 @db2.timeDec
 def run():
     db = db2.PostgresDb(params.DB_HOST, params.DB_NAME, quiet=True)
-    #     1. Setup database
+    #     1. Setup databases
     if raw_input('Archive (Y/N) ?\n').upper() == 'Y':
         archive(db,
                 params.LION,
@@ -1557,6 +1693,7 @@ def run():
         ]
 
     print '\n'*25
+    suf.run()
     setup_database(db)  # 221 sec
     #     2. Define street network to use (centerline)
     manual_fix_segments(db, fixes, params.WORKING_SCHEMA, params.LION)
