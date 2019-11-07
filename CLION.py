@@ -201,8 +201,8 @@ def add_clion_columns(dbo, schema=params.WORKING_SCHEMA, lion=params.LION, node=
                  add column rcoundist int,
                  add column lstsendist int,
                  add column rstsendist int,
-                 add column lborocode int,
-                 add column rborocode int,
+                 add column lntacode varchar(10),
+                 add column rntacode varchar(10),
                  add column lprecinct int,
                  add column rprecinct int
                  """.format(
@@ -239,27 +239,28 @@ def add_districts(dbo, schema=params.WORKING_SCHEMA, lion=params.LION):
     # update nta districts
     dbo.query("""
            drop table if exists buf;
-            create table {s}.buf as select borocode, st_buffer(geom, 10) as geom from {s}.nynta;
+            create table {s}.buf as select ntacode, st_buffer(geom, 10) as geom from {s}.nynta;
             CREATE INDEX temp_buf_idx ON {s}.buf USING gist (geom); 
 
             update {s}.{l} as l
-            set lborocode = borocode, rborocode = borocode
+            set lntacode = ntacode, rntacode = ntacode
             from {s}.buf p
             where st_within(l.geom, p.geom);
 
             update {s}.{l} as l
-            set rborocode = borocode
+            set rntacode = ntacode
             from {s}.buf p
-            where lborocode != borocode and st_within(l.geom, p.geom);
+            where lntacode != ntacode and st_within(l.geom, p.geom);
 
             drop table if exists {s}.buf;
         """.format(s=schema, l=lion))
     print 'NTAs added'
     # update police precincts
     # added st_makevalid because there was an issue with 61st PCT
+    # pct boundaries are not cleanly drawn so larger buffer is needed
     dbo.query("""
               drop table if exists buf;
-               create table {s}.buf as select precinct, st_buffer(st_makevalid(geom), 10) as geom from {s}.nypp;
+               create table {s}.buf as select precinct, st_buffer(st_makevalid(geom), 25) as geom from {s}.nypp;
                CREATE INDEX temp_buf_idx ON {s}.buf USING gist (geom); 
 
                update {s}.{l} as l
